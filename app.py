@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Stream Dashboard v1.3 - 多 stream worktree 一体化管理控制台
+Stream Dashboard v1.4 - 多 stream worktree 一体化管理控制台
 
 标签页: Streams(git状态+约定守卫+diff+终端+会话恢复[claude/codex]) / 实验注册表 / 进程 / 数据 / 后台Agent
+会话归属: claude/codex 均按 git 解析 cwd->worktree 根 (git_toplevel), 含子目录会话.
 仅监听 127.0.0.1. 终端/进程是真实 shell, 切勿绑定 0.0.0.0.
 启动: python tools/stream_dashboard/app.py  ->  http://127.0.0.1:5111
 """
@@ -462,6 +463,8 @@ def _session_meta(fp, info):
                     continue
                 if not isinstance(r, dict):
                     continue
+                if not info.get("cwd") and r.get("cwd"):
+                    info["cwd"] = r["cwd"]
                 t = r.get("type")
                 if t == "summary" and not info["name"]:
                     info["name"] = (r.get("summary") or "")[:60]
@@ -488,13 +491,23 @@ def _session_meta(fp, info):
 
 @app.route("/api/sessions")
 def api_sessions():
-    """列出某 worktree 已保存的 claude 会话 (供窗口关闭后恢复)."""
+    """列出某 worktree 已保存的 claude 会话 (按 git 解析 cwd 归属, 含子目录会话)."""
     path = request.args.get("path")
     if not path or not os.path.isdir(path):
         return jsonify({"dir": "", "sessions": []})
-    pdir = claude_project_dir(path)
+    target = git_toplevel(path)
+    # 候选 transcript 目录: 编码名精确匹配 + 以"编码名-"开头的(子目录启动的会话), 大小写不敏感
+    enc = re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(path)).casefold()
+    cand_dirs = []
+    if os.path.isdir(CLAUDE_PROJECTS_DIR):
+        for d in os.listdir(CLAUDE_PROJECTS_DIR):
+            dl = d.casefold()
+            if dl == enc or dl.startswith(enc + "-"):
+                cand_dirs.append(os.path.join(CLAUDE_PROJECTS_DIR, d))
     out = []
-    if os.path.isdir(pdir):
+    for pdir in cand_dirs:
+        if not os.path.isdir(pdir):
+            continue
         for fn in os.listdir(pdir):
             if not fn.endswith(".jsonl"):
                 continue
@@ -508,11 +521,14 @@ def api_sessions():
                 continue
             info = {"id": sid, "ts": st.st_mtime,
                     "mtime": time.strftime("%m-%d %H:%M", time.localtime(st.st_mtime)),
-                    "size_kb": round(st.st_size / 1024), "name": "", "preview": ""}
+                    "size_kb": round(st.st_size / 1024), "name": "", "preview": "", "cwd": ""}
             _session_meta(fp, info)
+            # git 解析该会话 cwd 确认归属; cwd 读不到则信任目录名编码(已落在候选集)
+            if info.get("cwd") and git_toplevel(info["cwd"]) != target:
+                continue
             out.append(info)
     out.sort(key=lambda x: x["ts"], reverse=True)
-    return jsonify({"dir": pdir, "sessions": out})
+    return jsonify({"dir": ";".join(cand_dirs), "sessions": out})
 
 
 @app.route("/api/agents")
@@ -543,6 +559,32 @@ def _norm_path(p):
         return os.path.normcase(os.path.abspath(p)).replace("\\", "/")
     except Exception:  # noqa: BLE001
         return (p or "").replace("\\", "/").lower()
+
+
+_TOPLEVEL_CACHE = {}
+
+
+def git_toplevel(path):
+    """把任意 cwd 解析到它所属 git worktree 根 (规范化路径), 带缓存.
+
+    用 git rev-parse 而非字符串前缀匹配: 子目录会正确归到 worktree 根,
+    且不受盘符大小写 / claude 目录名 '_'->'-' 编码歧义影响.
+    cwd 不存在或非 git 仓时, 回退为该路径自身的规范化值 (不会误配到别处).
+    """
+    key = _norm_path(path)
+    if not key:
+        return ""
+    if key in _TOPLEVEL_CACHE:
+        return _TOPLEVEL_CACHE[key]
+    top = ""
+    if os.path.isdir(path):
+        rc, out = run_git(path, ["rev-parse", "--show-toplevel"])
+        if rc == 0 and out.strip():
+            top = _norm_path(out.strip().splitlines()[0].strip())
+    if not top:
+        top = key  # 兜底: cwd 已删/非 git -> 用原 cwd 规范化, 不会误归到别的 worktree
+    _TOPLEVEL_CACHE[key] = top
+    return top
 
 
 def _codex_session_brief(fp):
@@ -589,7 +631,7 @@ def api_codex_sessions():
     path = request.args.get("path")
     if not path or not os.path.isdir(path):
         return jsonify({"dir": CODEX_SESSIONS_DIR, "sessions": []})
-    target = _norm_path(path)
+    target = git_toplevel(path)
     out = []
     if os.path.isdir(CODEX_SESSIONS_DIR):
         for root, _dirs, files in os.walk(CODEX_SESSIONS_DIR):
@@ -598,11 +640,10 @@ def api_codex_sessions():
                     continue
                 fp = os.path.join(root, fn)
                 br = _codex_session_brief(fp)
-                if not br:
+                if not br or not br["cwd"]:
                     continue
-                nc = _norm_path(br["cwd"])
-                # 精确命中本 worktree, 或在其子目录下启动的会话 (用分隔符防止 _old 误配)
-                if not nc or not (nc == target or nc.startswith(target + "/")):
+                # git 解析 rollout 里的 cwd -> worktree 根, 再比对 (子目录/大小写/编码歧义都正确)
+                if git_toplevel(br["cwd"]) != target:
                     continue
                 try:
                     st = os.stat(fp)
@@ -668,5 +709,5 @@ def pty(ws):
 
 
 if __name__ == "__main__":
-    print("Stream Dashboard v1.3 -> http://%s:%d  (repo: %s)" % (C.HOST, C.PORT, C.REPO_ROOT))
+    print("Stream Dashboard v1.4 -> http://%s:%d  (repo: %s)" % (C.HOST, C.PORT, C.REPO_ROOT))
     app.run(host=C.HOST, port=C.PORT, threaded=True, debug=False)
