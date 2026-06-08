@@ -1,0 +1,6 @@
+{
+  "stream/etf-timing": { "status": "ACTIVE", "note": "R1 时序稳定性" },
+  "stream/index-enhance": { "status": "ACTIVE", "note": "v7 validIC OOS 验证中" },
+  "stream/factor-replicate": { "status": "ACTIVE", "note": "RSV 增量重训" },
+  "stream/regime-style": { "status": "PARKED", "note": "alpha 增强已否决, 仅风险用途" }
+}

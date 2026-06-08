@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Stream Dashboard</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Stream Dashboard</h1>
+  <nav class="tabs">
+    <button class="tab active" data-tab="streams">Streams</button>
+    <button class="tab" data-tab="registry">实验注册表</button>
+    <button class="tab" data-tab="procs">进程</button>
+    <button class="tab" data-tab="data">数据</button>
+    <button class="tab" data-tab="agents">后台Agent</button>
+  </nav>
+  <span class="meta" id="meta">加载中...</span>
+  <button class="primary" onclick="addWorktree()">+ worktree</button>
+  <button onclick="refreshAll()">刷新</button>
+</header>
+
+<!-- ===== Streams ===== -->
+<section class="panel active" id="tab-streams">
+  <div class="left">
+    <div id="wipbar" class="wipbar"></div>
+    <div id="cards"></div>
+  </div>
+  <div class="right">
+    <div class="termbar">
+      <span class="cwd" id="cwd">未连接终端</span>
+      <span class="quick">
+        <span class="grp">Claude:</span>
+        <button onclick="sendCmd('claude')" title="新开 Claude 会话">+新</button>
+        <button onclick="sendCmd('claude -c')" title="继续该目录最近 Claude 会话">继续</button>
+        <button onclick="sendCmd('claude -r')" title="Claude 会话选择器">选择</button>
+        <span class="grp">Codex:</span>
+        <button onclick="sendCmd('codex')" title="新开 Codex 会话">+新</button>
+        <button onclick="sendCmd('codex resume --last')" title="继续该目录最近 Codex 会话">继续</button>
+        <button onclick="sendCmd('codex resume')" title="Codex 会话选择器(自动按当前目录过滤)">选择</button>
+        {% for q in quick %}<button onclick="sendCmd({{ q.cmd|tojson }})">{{ q.label }}</button>{% endfor %}
+      </span>
+    </div>
+    <div id="term"></div>
+  </div>
+</section>
+
+<!-- ===== 实验注册表 ===== -->
+<section class="panel" id="tab-registry">
+  <div class="regwrap">
+    <div class="regbar">
+      <select id="regfilter" onchange="renderRegistry()">
+        <option value="">全部 stream</option>
+        <option value="etf-timing">etf-timing</option>
+        <option value="index-enhance">index-enhance</option>
+        <option value="factor-replicate">factor-replicate</option>
+        <option value="regime-style">regime-style</option>
+      </select>
+      <button class="primary" onclick="showRegForm()">+ 新实验</button>
+    </div>
+    <div id="regform" class="regform" style="display:none"></div>
+    <div id="regtable"></div>
+  </div>
+</section>
+
+<!-- ===== 进程 ===== -->
+<section class="panel" id="tab-procs">
+  <div class="procwrap">
+    <div class="procbar">
+      <span>作业:</span>
+      {% for j in jobs %}<button onclick="startJob({{ j.cmd|tojson }},{{ j.label|tojson }})">{{ j.label }}</button>{% endfor %}
+      <input id="customcmd" placeholder="自定义命令 (在选中 worktree 运行)" style="flex:1;min-width:200px">
+      <button class="primary" onclick="startCustom()">启动</button>
+      <button onclick="clearProcs()">清理已结束</button>
+    </div>
+    <div class="procmain">
+      <div id="proclist" class="proclist"></div>
+      <pre id="proclog" class="proclog">选择左侧进程查看输出</pre>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 数据 ===== -->
+<section class="panel" id="tab-data">
+  <div id="datawrap" class="datawrap">加载中...</div>
+</section>
+
+<!-- ===== 后台 Agent ===== -->
+<section class="panel" id="tab-agents">
+  <div class="procwrap">
+    <div class="procbar">
+      <button onclick="loadAgents()">刷新</button>
+      <span style="color:#8b949e;font-size:12px">claude 原生后台会话 (claude agents --json) — 不挂终端, 关窗口仍在跑</span>
+    </div>
+    <div id="agentwrap">加载中...</div>
+  </div>
+</section>
+
+<!-- diff 模态 -->
+<div class="modal" id="diffmodal" style="display:none">
+  <div class="modalbox">
+    <div class="modalhead">
+      <span id="difftitle">改动</span>
+      <button onclick="closeDiff()">关闭</button>
+    </div>
+    <div class="modalbody">
+      <div class="filelist" id="filelist"></div>
+      <div class="diffview"><pre id="diffpre"></pre></div>
+    </div>
+    <div class="modalfoot">
+      <input id="commitmsg" placeholder="提交信息 (commit message)">
+      <button onclick="stageSelected(false)">暂存选中</button>
+      <button onclick="stageSelected(true)">取消暂存</button>
+      <button class="primary" onclick="commitSelected()">提交选中</button>
+    </div>
+  </div>
+</div>
+
+<!-- 会话恢复模态 -->
+<div class="modal" id="sessmodal" style="display:none">
+  <div class="modalbox">
+    <div class="modalhead">
+      <span id="sesstitle">会话</span>
+      <button onclick="closeSess()">关闭</button>
+    </div>
+    <div class="modalbody">
+      <div class="filelist" id="sesslist" style="width:100%">加载中...</div>
+    </div>
+    <div class="modalfoot">
+      <span id="sessdir" style="color:#6e7681;font-size:11px;font-family:Consolas,monospace"></span>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" onclick="this.style.display='none'"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
