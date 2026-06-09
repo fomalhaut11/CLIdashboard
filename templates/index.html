@@ -59,6 +59,12 @@
         <option value="factor-replicate">factor-replicate</option>
         <option value="regime-style">regime-style</option>
       </select>
+      <select id="regtypefilter" onchange="renderRegistry()">
+        <option value="">全部类型</option>
+        <option value="research">research</option>
+        <option value="dev">dev</option>
+        <option value="replication">replication</option>
+      </select>
       <button class="primary" onclick="showRegForm()">+ 新实验</button>
     </div>
     <div id="regform" class="regform" style="display:none"></div>

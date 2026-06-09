@@ -1,7 +1,10 @@
-# Stream Dashboard v1.3
+# Stream Dashboard v1.5
 
 多 stream worktree 一体化管理控制台:本地 Web,把 4 条平行开发 stream 的
 **git 动态、约定守卫、diff/提交、实验注册表、进程、数据、会话恢复(Claude+Codex)、后台Agent** 整合在一个浏览器页面。
+
+核心用途:对所有在跑的 coding agent(claude/codex)有一个**统一入口 + 进度总览**——长会话不必再靠记忆,
+一眼看清每个 agent **在哪个分支、最近在干什么**;实验注册表按 type(research/dev/replication)+ 下一步管各线进度。
 
 > 注:服务是常驻进程,关闭浏览器**不会**停掉它——重新打开 http://127.0.0.1:5111 即可。
 > 同理 Claude Code 会话持续写盘 (`~/.claude/projects/<编码路径>/<id>.jsonl`),CLI 窗口关了对话不丢,见下方「会话恢复」。
@@ -42,11 +45,6 @@ dashboard 自身与被监控的目标 repo 解耦。默认监控 `F:\zx\multifac
   codex rollout 在 `~/.codex/sessions/年/月/日/rollout-*.jsonl`(按文件内 `cwd` 归属到 worktree)。
 - 安全 git 按钮:fetch / pull / log。右上角「+ worktree」新建。
 
-### 实验注册表
-跨 stream 实验总表(源文件 `docs/experiments/registry.json`):id / stream / 日期 /
-假设 / kill 准则 / 结论(RUNNING·PASS·HONEST-FAIL)/ FactorStore 版本。支持按 stream 过滤、
-新增、一键改结论、删除。**作用:避免在一条 stream 重试另一条已否决的东西。**
-
 ### 进程
 把命令作为**受管后台进程**启动(回测、训练、health-check),输出流式落日志面板。
 作业按钮 / 自定义命令(在当前选中 worktree 运行)/ 进程列表(状态·退出码·停止)/ 实时日志 / 清理已结束。
@@ -56,10 +54,18 @@ dashboard 自身与被监控的目标 repo 解耦。默认监控 `F:\zx\multifac
 数据层可视化(读 `config/main.yaml` 的 data_root):store_v2 激活版本、raw/alpha191/orthogonal 因子计数、
 关键数据集(Price/财务三表/MarketState/交易日历…)的最后更新时间、大小、新鲜/过期判定。
 
-### 后台Agent
-读 `claude agents --json`,列出当前所有在跑/后台的 claude 会话(跨 worktree):kind / 状态(busy·idle)/
-pid / cwd / sessionId。每条「在终端接入」=切到终端并 `claude -r <id>` 接入该会话。
-**作用:一页总览同时工作的多个 Claude CLI,而不必在一堆终端窗口间找。**
+### 后台Agent(统一入口 + 进度)
+读 `claude agents --json`,列出当前所有在跑的 claude 会话(跨 worktree),每条显示:
+- 状态(busy·idle)、**所在分支**(git 解析 cwd→worktree→HEAD)、worktree 名、pid、cwd;
+- **最近在干什么**:从该会话自己的 transcript 末尾抓「最近一条真人提问 ▶」+「最近一条 assistant 回复 ↳」——长会话不用翻窗口回忆;
+- 「在终端接入」=切到终端并 `claude -r <id>` 接入。
+- 8 秒自动刷新。**作用:一页看清同时工作的多个 agent 在哪条分支、进度到哪。**
+
+### 实验注册表(进度台账)
+跨 stream 实验/任务总表(`docs/experiments/registry.json`):**类型(research/dev/replication)**/ stream /
+假设或目标 / kill 准则 / **下一步** / 结论(RUNNING·PASS·HONEST-FAIL)/ FactorStore 版本 / 链接。
+支持按 stream 和类型过滤,新增,一键改结论,`→` 一键更新下一步,删除。
+**作用:一个台账管所有研究/开发线的进度,避免重试已否决方向,也避免忘记某线下一步该干啥。**
 
 ## 安全
 

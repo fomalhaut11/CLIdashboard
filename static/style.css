@@ -111,6 +111,11 @@ tr:hover td { background: #161b22; }
 .sesshd { font-size: 12px; font-weight: 600; color: #58a6ff; padding: 4px 2px; border-bottom: 1px solid #21262d; margin-bottom: 8px; }
 .termbar .quick .grp { color: #6e7681; font-size: 11px; margin: 0 2px 0 8px; }
 
+/* 后台 Agent 最近活动 */
+.agentact { margin-top: 6px; font-size: 11px; line-height: 1.55; border-left: 2px solid #30363d; padding-left: 8px; }
+.agentact .au { color: #79b8ff; }
+.agentact .aa { color: #8b949e; }
+
 .toast { position: fixed; bottom: 16px; right: 16px; max-width: 520px; max-height: 45vh; overflow: auto;
          background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px;
          font-family: Consolas, monospace; font-size: 12px; white-space: pre-wrap; display: none; z-index: 200; }

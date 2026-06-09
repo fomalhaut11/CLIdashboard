@@ -136,35 +136,42 @@ let regData=[];
 async function loadRegistry(){ regData=await jget("/api/registry"); renderRegistry(); }
 function renderRegistry(){
   const f=document.getElementById("regfilter").value;
-  const rows=regData.filter(e=>!f||e.stream===f).map(e=>`<tr>
-    <td>${e.id}</td><td>${esc(e.stream)}</td><td>${esc(e.date||"")}</td>
-    <td>${esc(e.hypothesis||"")}</td><td>${esc(e.kill||"")}</td>
+  const tfe=document.getElementById("regtypefilter");
+  const tf=tfe?tfe.value:"";
+  const rows=regData.filter(e=>(!f||e.stream===f)&&(!tf||(e.type||"")===tf)).map(e=>`<tr>
+    <td>${e.id}</td><td>${esc(e.type||"")}</td><td>${esc(e.stream)}</td>
+    <td>${esc(e.hypothesis||"")}</td><td>${esc(e.next||"")}</td>
     <td><span class="st-pill st-${(e.status||"RUNNING").replace(" ","-")}">${esc(e.status||"RUNNING")}</span></td>
-    <td>${esc(e.version||"")}</td>
     <td>${["RUNNING","PASS","HONEST-FAIL"].map(s=>`<button onclick="regSet(${e.id},'${s}')">${s[0]}</button>`).join("")}
+        <button onclick="regNext(${e.id})" title="更新下一步">→</button>
         <button onclick="regDel(${e.id})">×</button></td></tr>`).join("");
-  document.getElementById("regtable").innerHTML=`<table><tr><th>id</th><th>stream</th><th>日期</th>
-    <th>假设</th><th>kill 准则</th><th>结论</th><th>FS版本</th><th>操作</th></tr>${rows}</table>`;
+  document.getElementById("regtable").innerHTML=`<table><tr><th>id</th><th>类型</th><th>stream</th>
+    <th>假设/目标</th><th>下一步</th><th>结论</th><th>操作</th></tr>${rows}</table>`;
 }
 function showRegForm(){
   const el=document.getElementById("regform");
   el.style.display=el.style.display==="none"?"grid":"none";
   el.innerHTML=`
-    <label>stream<select id="rf_stream"><option>etf-timing</option><option>index-enhance</option><option>factor-replicate</option><option>regime-style</option></select></label>
+    <label>类型<select id="rf_type"><option value="research">research</option><option value="dev">dev</option><option value="replication">replication</option></select></label>
+    <label>stream<select id="rf_stream"><option>etf-timing</option><option>index-enhance</option><option>factor-replicate</option><option>regime-style</option><option>main/shared</option></select></label>
     <label>日期<input id="rf_date" value="${new Date().toISOString().slice(0,10)}"></label>
-    <label class="full">假设 (hypothesis)<input id="rf_hyp"></label>
-    <label class="full">kill 准则<input id="rf_kill"></label>
+    <label class="full">假设/目标 (hypothesis)<input id="rf_hyp"></label>
+    <label class="full">kill 准则 (research 用)<input id="rf_kill"></label>
+    <label class="full">下一步 (next)<input id="rf_next"></label>
     <label>FactorStore 版本<input id="rf_ver"></label>
     <label>链接<input id="rf_link"></label>
     <div class="full"><button class="primary" onclick="regAdd()">保存</button></div>`;
 }
 async function regAdd(){
-  const e={stream:rf_stream.value,date:rf_date.value,hypothesis:rf_hyp.value,kill:rf_kill.value,
-           version:rf_ver.value,link:rf_link.value,status:"RUNNING"};
-  if(!e.hypothesis){toast("填假设");return;}
+  const e={type:rf_type.value,stream:rf_stream.value,date:rf_date.value,hypothesis:rf_hyp.value,kill:rf_kill.value,
+           next:rf_next.value,version:rf_ver.value,link:rf_link.value,status:"RUNNING"};
+  if(!e.hypothesis){toast("填假设/目标");return;}
   await jpost("/api/registry",{op:"add",entry:e}); document.getElementById("regform").style.display="none"; loadRegistry();
 }
 async function regSet(id,status){ await jpost("/api/registry",{op:"update",id,fields:{status}}); loadRegistry(); }
+async function regNext(id){ const cur=(regData.find(x=>x.id===id)||{}).next||"";
+  const v=prompt("下一步:",cur); if(v===null)return;
+  await jpost("/api/registry",{op:"update",id,fields:{next:v}}); loadRegistry(); }
 async function regDel(id){ if(confirm("删除实验 "+id+"?")){ await jpost("/api/registry",{op:"delete",id}); loadRegistry(); } }
 
 // ===== 进程 =====
@@ -233,22 +240,33 @@ function resumeSession(kind,id){
 function copyResume(kind,id){ const c=resumeCmd(kind,id); if(!c) return;
   if(navigator.clipboard) navigator.clipboard.writeText(c); toast("已复制: "+c); }
 
-// ===== 后台 Agent (claude agents --json) =====
+// ===== 后台 Agent — 在跑 coding agent 的统一视图: 分支 + 最近在干啥 (8s 自动刷新) =====
+let agentTimer=null;
+function scheduleAgents(){
+  if(agentTimer) clearTimeout(agentTimer);
+  if(document.getElementById("tab-agents").classList.contains("active")) agentTimer=setTimeout(loadAgents,8000);
+}
 async function loadAgents(){
-  const w=document.getElementById("agentwrap"); w.textContent="加载中...";
-  let d; try{ d=await jget("/api/agents"); }catch(e){ w.innerHTML="<div style='color:#f85149'>请求失败</div>"; return; }
-  if(!d.ok){ w.innerHTML="<div style='color:#f85149'>读取失败: "+esc(d.error||"")+"</div>"; return; }
+  const w=document.getElementById("agentwrap");
+  let d; try{ d=await jget("/api/agents"); }catch(e){ w.innerHTML="<div style='color:#f85149'>请求失败</div>"; scheduleAgents(); return; }
+  if(!d.ok){ w.innerHTML="<div style='color:#f85149'>读取失败: "+esc(d.error||"")+"</div>"; scheduleAgents(); return; }
   if(!d.agents.length){
-    w.innerHTML="<div style='color:#6e7681'>当前无在跑 agent。"+(d.raw?"<pre class='proclog' style='margin-top:8px'>"+esc(d.raw)+"</pre>":"")+"</div>"; return; }
+    w.innerHTML="<div style='color:#6e7681'>当前无在跑 agent。"+(d.raw?"<pre class='proclog' style='margin-top:8px'>"+esc(d.raw)+"</pre>":"")+"</div>"; scheduleAgents(); return; }
   w.innerHTML=d.agents.map(a=>{
     const id=a.sessionId||a.id||"", st=a.status||"?";
     const dot=(st==="busy"||st==="running")?"running":"exited";
     const cwd=(a.cwd||"").replace(/\\/g,"\\\\");
+    const br=a.branch?`<span class="badge ahead">${esc(a.branch)}</span>`:"";
+    const wt=a.worktree?`<span style="color:#6e7681">${esc(a.worktree)}</span>`:"";
+    const act=(a.last_user||a.last_asst)?
+      `<div class="agentact">${a.last_user?`<div class="au">▶ ${esc(a.last_user)}</div>`:""}${a.last_asst?`<div class="aa">↳ ${esc(a.last_asst)}</div>`:""}</div>`:"";
     return `<div class="procitem">
-      <div class="lbl"><span class="dot ${dot}"></span>${esc(a.kind||"agent")} · ${esc(st)} <span style="color:#6e7681">pid ${a.pid||"?"}</span></div>
-      <div class="sub">${esc(a.cwd||"")}<br>${esc(id)}</div>
+      <div class="lbl"><span class="dot ${dot}"></span>${esc(a.kind||"agent")} · ${esc(st)} ${br} ${wt} <span style="color:#6e7681">pid ${a.pid||"?"}</span></div>
+      <div class="sub">${esc(a.cwd||"")}</div>
+      ${act}
       ${id&&cwd?`<div style="margin-top:6px"><button onclick="attachAgent('${cwd}','${id}')">在终端接入</button></div>`:""}
     </div>`; }).join("");
+  scheduleAgents();
 }
 function attachAgent(cwd,id){
   id=safeId(id); if(!id){ toast("会话 id 非法, 拒绝"); return; }

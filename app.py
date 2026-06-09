@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Stream Dashboard v1.4 - 多 stream worktree 一体化管理控制台
+Stream Dashboard v1.5 - 多 stream worktree 一体化管理控制台
 
-标签页: Streams(git状态+约定守卫+diff+终端+会话恢复[claude/codex]) / 实验注册表 / 进程 / 数据 / 后台Agent
+标签页: Streams(git状态+约定守卫+diff+终端+会话恢复[claude/codex]) / 实验注册表(type/进度) / 进程 / 数据 / 后台Agent(分支+最近活动)
 会话归属: claude/codex 均按 git 解析 cwd->worktree 根 (git_toplevel), 含子目录会话.
+后台Agent: 每个在跑 agent 显示所在分支 + 从其 transcript 末尾抓的"最近在干啥".
 仅监听 127.0.0.1. 终端/进程是真实 shell, 切勿绑定 0.0.0.0.
 启动: python tools/stream_dashboard/app.py  ->  http://127.0.0.1:5111
 """
@@ -489,6 +490,47 @@ def _session_meta(fp, info):
         pass
 
 
+def _tail_activity(fp, n_bytes=131072):
+    """读 transcript 末尾, 取最近一条真人提问 + 最近一条 assistant 文本 (看 agent 在干啥)."""
+    last_user = last_asst = ""
+    try:
+        size = os.path.getsize(fp)
+        with open(fp, "rb") as f:
+            if size > n_bytes:
+                f.seek(size - n_bytes)
+                f.readline()  # 丢弃可能不完整的首行
+            chunk = f.read().decode("utf-8", "replace")
+    except OSError:
+        return {"last_user": "", "last_asst": ""}
+    for line in chunk.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(r, dict):
+            continue
+        m = r.get("message") or {}
+        c = m.get("content")
+        txt = ""
+        if isinstance(c, str):
+            txt = c
+        elif isinstance(c, list):
+            txt = " ".join(b.get("text", "") for b in c
+                           if isinstance(b, dict) and b.get("type") == "text")
+        txt = (txt or "").strip().replace("\n", " ")
+        if not txt:
+            continue
+        if r.get("type") == "user":
+            if txt[0] not in "<[" and not txt.startswith("Caveat"):
+                last_user = txt[:140]
+        elif r.get("type") == "assistant":
+            last_asst = txt[:180]
+    return {"last_user": last_user, "last_asst": last_asst}
+
+
 @app.route("/api/sessions")
 def api_sessions():
     """列出某 worktree 已保存的 claude 会话 (按 git 解析 cwd 归属, 含子目录会话)."""
@@ -540,6 +582,20 @@ def api_agents():
                            errors="replace", timeout=20)
         body = (p.stdout or "").strip()
         data = json.loads(body) if body.startswith("[") else []
+        for a in (data if isinstance(data, list) else []):
+            if not isinstance(a, dict):
+                continue
+            cwd = a.get("cwd")
+            if not cwd:
+                continue
+            a["branch"] = git_branch(cwd)           # 在哪个分支
+            top = git_toplevel(cwd)
+            a["worktree"] = os.path.basename(top.rstrip("/")) if top else ""
+            sid = a.get("sessionId")
+            if sid:                                  # 用 sessionId 定位它自己的 transcript, 读末尾=在干啥
+                tp = os.path.join(claude_project_dir(cwd), str(sid) + ".jsonl")
+                if os.path.isfile(tp):
+                    a.update(_tail_activity(tp))
         return jsonify({"ok": True, "agents": data, "raw": "" if data else body[:400]})
     except Exception as e:  # noqa: BLE001
         return jsonify({"ok": False, "error": str(e), "agents": []})
@@ -585,6 +641,14 @@ def git_toplevel(path):
         top = key  # 兜底: cwd 已删/非 git -> 用原 cwd 规范化, 不会误归到别的 worktree
     _TOPLEVEL_CACHE[key] = top
     return top
+
+
+def git_branch(path):
+    """cwd -> 当前分支名 (HEAD). 不缓存(分支会变); 解析不了返回空."""
+    if not path or not os.path.isdir(path):
+        return ""
+    rc, out = run_git(path, ["rev-parse", "--abbrev-ref", "HEAD"])
+    return out.strip().splitlines()[0].strip() if rc == 0 and out.strip() else ""
 
 
 def _codex_session_brief(fp):
@@ -709,5 +773,5 @@ def pty(ws):
 
 
 if __name__ == "__main__":
-    print("Stream Dashboard v1.4 -> http://%s:%d  (repo: %s)" % (C.HOST, C.PORT, C.REPO_ROOT))
+    print("Stream Dashboard v1.5 -> http://%s:%d  (repo: %s)" % (C.HOST, C.PORT, C.REPO_ROOT))
     app.run(host=C.HOST, port=C.PORT, threaded=True, debug=False)
