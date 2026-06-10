@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Stream Dashboard v1.5 - 多 stream worktree 一体化管理控制台
+Stream Dashboard v1.6 - 多 stream worktree 一体化管理控制台
 
 标签页: Streams(git状态+约定守卫+diff+终端+会话恢复[claude/codex]) / 实验注册表(type/进度) / 进程 / 数据 / 后台Agent(分支+最近活动)
 会话归属: claude/codex 均按 git 解析 cwd->worktree 根 (git_toplevel), 含子目录会话.
 后台Agent: 每个在跑 agent 显示所在分支 + 从其 transcript 末尾抓的"最近在干啥".
+终端: PTY 后端常驻(按 worktree 一份), 切走/关页只 detach 不杀, 重连回放; 多个 CLI 可同时存活.
 仅监听 127.0.0.1. 终端/进程是真实 shell, 切勿绑定 0.0.0.0.
 启动: python tools/stream_dashboard/app.py  ->  http://127.0.0.1:5111
 """
@@ -720,34 +721,110 @@ def api_codex_sessions():
     return jsonify({"dir": CODEX_SESSIONS_DIR, "sessions": out})
 
 
-# ---------------- 交互终端 (PTY) ----------------
+# ---------------- 交互终端 (PTY) — 后端常驻, 按 worktree 一份, 断开只 detach 不杀 ----------------
+# 多个 CLI 可同时存活: 切走/关页只是 detach, PTY 继续跑; 重连回放最近输出. 显式关闭才 terminate.
+
+PTYS = {}                 # key(规范化 cwd) -> {"proc","buf","clients","cwd"}
+PTY_LOCK = threading.Lock()
+PTY_BUF_MAX = 200000      # 每个终端保留最近 ~200KB 输出, 供重连回放
+
+
+def _pty_reader(key):
+    ent = PTYS.get(key)
+    if not ent:
+        return
+    proc = ent["proc"]
+    try:
+        while True:
+            try:
+                if not proc.isalive():
+                    break
+            except Exception:  # noqa: BLE001
+                break
+            data = proc.read(65536)
+            if not data:
+                continue
+            ent["buf"] = (ent["buf"] + data)[-PTY_BUF_MAX:]
+            for ws in list(ent["clients"]):
+                try:
+                    ws.send(data)
+                except Exception:  # noqa: BLE001
+                    ent["clients"].discard(ws)
+    except (EOFError, Exception):  # noqa: BLE001
+        pass
+    finally:
+        for ws in list(ent["clients"]):
+            try:
+                ws.send("\r\n\x1b[31m[终端进程已退出]\x1b[0m\r\n")
+            except Exception:  # noqa: BLE001
+                pass
+        with PTY_LOCK:
+            PTYS.pop(key, None)
+
+
+def _get_or_spawn_pty(cwd):
+    key = _norm_path(cwd)
+    with PTY_LOCK:
+        ent = PTYS.get(key)
+        if ent:
+            try:
+                if ent["proc"].isalive():
+                    return key, ent
+            except Exception:  # noqa: BLE001
+                pass
+            PTYS.pop(key, None)   # 死掉的清掉重开
+        proc = winpty.PtyProcess.spawn(C.SHELL, cwd=cwd, dimensions=(30, 100))
+        ent = {"proc": proc, "buf": "", "clients": set(), "cwd": cwd}
+        PTYS[key] = ent
+    threading.Thread(target=_pty_reader, args=(key,), daemon=True).start()
+    return key, ent
+
+
+@app.route("/api/pty/list")
+def api_pty_list():
+    """当前常驻终端列表 (跨切换存活)."""
+    out = []
+    with PTY_LOCK:
+        items = list(PTYS.items())
+    for key, ent in items:
+        try:
+            alive = ent["proc"].isalive()
+        except Exception:  # noqa: BLE001
+            alive = False
+        out.append({"key": key, "cwd": ent["cwd"],
+                    "name": os.path.basename(ent["cwd"].rstrip("\\/")) or ent["cwd"],
+                    "alive": alive, "clients": len(ent["clients"])})
+    return jsonify(out)
+
+
+@app.route("/api/pty/kill", methods=["POST"])
+def api_pty_kill():
+    """显式关闭某终端 (真正 terminate)."""
+    key = (request.get_json(force=True) or {}).get("key")
+    with PTY_LOCK:
+        ent = PTYS.get(key)
+    if ent:
+        try:
+            ent["proc"].terminate(force=True)
+        except Exception:  # noqa: BLE001
+            pass
+    return jsonify({"rc": 0})
+
 
 @sock.route("/pty")
 def pty(ws):
     cwd = request.args.get("cwd") or C.REPO_ROOT
     if not os.path.isdir(cwd):
         cwd = C.REPO_ROOT
-    proc = winpty.PtyProcess.spawn(C.SHELL, cwd=cwd, dimensions=(30, 100))
-    alive = {"v": True}
-
-    def reader():
+    key, ent = _get_or_spawn_pty(cwd)
+    ent["clients"].add(ws)
+    if ent["buf"]:                       # 重连回放: 让客户端看到该终端当前状态
         try:
-            while alive["v"] and proc.isalive():
-                data = proc.read(65536)
-                if data:
-                    ws.send(data)
-        except (EOFError, Exception):  # noqa: BLE001
+            ws.send(ent["buf"])
+        except Exception:  # noqa: BLE001
             pass
-        finally:
-            alive["v"] = False
-            try:
-                ws.close()
-            except Exception:  # noqa: BLE001
-                pass
-
-    threading.Thread(target=reader, daemon=True).start()
     try:
-        while alive["v"]:
+        while True:
             msg = ws.receive()
             if msg is None:
                 break
@@ -756,22 +833,21 @@ def pty(ws):
             except (ValueError, TypeError):
                 continue
             if "i" in obj:
-                proc.write(obj["i"])
+                try:
+                    ent["proc"].write(obj["i"])
+                except Exception:  # noqa: BLE001
+                    break
             elif "r" in obj:
                 try:
-                    proc.setwinsize(int(obj["r"][1]), int(obj["r"][0]))
+                    ent["proc"].setwinsize(int(obj["r"][1]), int(obj["r"][0]))
                 except Exception:  # noqa: BLE001
                     pass
     except Exception:  # noqa: BLE001
         pass
     finally:
-        alive["v"] = False
-        try:
-            proc.terminate(force=True)
-        except Exception:  # noqa: BLE001
-            pass
+        ent["clients"].discard(ws)       # 仅 detach, 不杀 PTY
 
 
 if __name__ == "__main__":
-    print("Stream Dashboard v1.5 -> http://%s:%d  (repo: %s)" % (C.HOST, C.PORT, C.REPO_ROOT))
+    print("Stream Dashboard v1.6 -> http://%s:%d  (repo: %s)" % (C.HOST, C.PORT, C.REPO_ROOT))
     app.run(host=C.HOST, port=C.PORT, threaded=True, debug=False)

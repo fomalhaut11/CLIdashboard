@@ -25,19 +25,36 @@ window.addEventListener("resize",()=>{fit.fit();sendResize();});
 let ws=null, activePath=null, pendingCmd=null;
 function sendResize(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({r:[term.cols,term.rows]})); }
 function connect(path,cmd){
-  if(ws){try{ws.close()}catch(e){}}
+  if(ws){ws.onclose=null;ws.onmessage=null;try{ws.close()}catch(e){}}  // 切换=detach, 后端 PTY 不杀
   term.reset(); activePath=path; pendingCmd=cmd||null;
   document.getElementById("cwd").textContent="终端 @ "+path;
   const proto=location.protocol==="https:"?"wss":"ws";
   ws=new WebSocket(`${proto}://${location.host}/pty?cwd=${encodeURIComponent(path)}`);
-  ws.onopen=()=>{sendResize();term.focus();
+  ws.onopen=()=>{sendResize();term.focus();loadPtys();   // 后端会回放该终端最近输出
     if(pendingCmd){const c=pendingCmd;pendingCmd=null;setTimeout(()=>{if(ws&&ws.readyState===1)ws.send(JSON.stringify({i:c+"\r"}));},700);}};
   ws.onmessage=e=>term.write(e.data);
-  ws.onclose=()=>term.write("\r\n\x1b[31m[终端已断开]\x1b[0m\r\n");
+  ws.onclose=()=>term.write("\r\n\x1b[33m[已断开此视图, 终端进程仍在后台存活]\x1b[0m\r\n");
   document.querySelectorAll(".card").forEach(c=>c.classList.toggle("active",c.dataset.path===path));
 }
 term.onData(d=>{ if(ws&&ws.readyState===1) ws.send(JSON.stringify({i:d})); });
 function sendCmd(cmd){ if(!ws||ws.readyState!==1){toast("先点某 stream 的『终端』连接");return;} ws.send(JSON.stringify({i:cmd+"\r"})); term.focus(); }
+
+// ===== 常驻终端列表 (多 CLI 并存; 切走不杀, 点 chip 切回) =====
+function samePath(a,b){ return (a||"").replace(/\\/g,"/").toLowerCase()===(b||"").replace(/\\/g,"/").toLowerCase(); }
+async function loadPtys(){
+  let list; try{ list=await jget("/api/pty/list"); }catch(e){ return; }
+  const bar=document.getElementById("ptybar"); if(!bar) return;
+  if(!list.length){ bar.innerHTML="<span class='ptyhint'>无常驻终端 — 点某卡「终端」开一个</span>"; return; }
+  bar.innerHTML="<span class='ptyhint'>常驻终端:</span>"+list.map(p=>{
+    const active=samePath(p.cwd,activePath)?"active":"";
+    const cwd=p.cwd.replace(/\\/g,"\\\\");
+    return `<span class="ptychip ${active}">
+      <span onclick="connect('${cwd}')" title="${esc(p.cwd)} (点击切回)">${p.alive?'●':'○'} ${esc(p.name)}${p.clients>1?' ·'+p.clients+'人':''}</span>
+      <span class="x" onclick="killPty('${p.key}')" title="关闭此终端(结束里面的进程)">×</span></span>`;
+  }).join("");
+}
+async function killPty(key){ if(!confirm("关闭这个终端? 里面在跑的进程会被结束。"))return;
+  await jpost("/api/pty/kill",{key}); setTimeout(loadPtys,300); }
 
 // ===== Streams =====
 async function addWorktree(){
@@ -89,6 +106,7 @@ async function refreshStreams(){
     wb.className="wipbar"+(d.wip_active>2?" warn":"");
     document.getElementById("meta").textContent=d.streams.length+" worktree · "+new Date().toLocaleTimeString();
     if(activePath) document.querySelectorAll(".card").forEach(c=>c.classList.toggle("active",c.dataset.path===activePath));
+    loadPtys();
   }catch(e){ document.getElementById("meta").textContent="刷新失败: "+e; }
 }
 

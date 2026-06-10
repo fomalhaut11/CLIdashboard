@@ -44,6 +44,7 @@
         {% for q in quick %}<button onclick="sendCmd({{ q.cmd|tojson }})">{{ q.label }}</button>{% endfor %}
       </span>
     </div>
+    <div id="ptybar" class="ptybar"></div>
     <div id="term"></div>
   </div>
 </section>

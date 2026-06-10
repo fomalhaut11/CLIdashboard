@@ -1,4 +1,4 @@
-# Stream Dashboard v1.5
+# Stream Dashboard v1.6
 
 多 stream worktree 一体化管理控制台:本地 Web,把 4 条平行开发 stream 的
 **git 动态、约定守卫、diff/提交、实验注册表、进程、数据、会话恢复(Claude+Codex)、后台Agent** 整合在一个浏览器页面。
@@ -36,9 +36,13 @@ dashboard 自身与被监控的目标 repo 解耦。默认监控 `F:\zx\multifac
   改到共享核心(红/应走 main)、跑进别的 stream 文件夹(红)、动注册表(黄/走 main)、未归类(黄)。
 - **stream 状态板**:每条标 ACTIVE/PARKED/BLOCKED;顶部 WIP 计数,活跃 >2 高亮提醒。
 - **改动/diff**:点「改动」开模态,逐文件看彩色 diff、勾选文件暂存/取消暂存/提交。
-- **嵌入式终端**:点「终端」在该 worktree 起真实 PowerShell。终端栏分 Claude / Codex 两组启动按钮:
+- **嵌入式终端(常驻、可多 CLI 并存)**:点「终端」在该 worktree 起真实 PowerShell。
+  PTY 在**后端常驻**(按 worktree 一份)——切到别的 stream / 关浏览器**只是 detach,里面的 CLI 继续跑**;
+  切回来自动**回放最近输出**。终端上方「常驻终端」条列出所有存活终端:点 chip 切回(`●`存活/`○`退出),`×` 显式关闭。
+  终端栏分 Claude / Codex 两组启动按钮:
   - Claude:`+新`=`claude`、`继续`=`claude -c`(接该目录最近)、`选择`=`claude -r`(选择器)。
   - Codex:`+新`=`codex`、`继续`=`codex resume --last`、`选择`=`codex resume`(自动按当前目录过滤)。
+  - 注:回放缓冲为最近 ~200KB;PTY 仍是 dashboard(Flask)子进程,dashboard 进程本身退出时终端才会随之结束。
 - **会话恢复(Claude + Codex)**:点「会话」开模态,分两区列出该 worktree 已保存的会话
   (名称/预览/时间/大小)。点「恢复」=切到终端自动 `claude -r <id>` 或 `codex resume <id>` 接回——
   窗口/浏览器崩了也不用手写 handoff。claude transcript 在 `~/.claude/projects/<编码路径>/`;

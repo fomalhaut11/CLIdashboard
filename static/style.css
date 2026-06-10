@@ -116,6 +116,17 @@ tr:hover td { background: #161b22; }
 .agentact .au { color: #79b8ff; }
 .agentact .aa { color: #8b949e; }
 
+/* 常驻终端条 (多 CLI 并存) */
+.ptybar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 5px 10px;
+          background: #0d1117; border-bottom: 1px solid #21262d; min-height: 28px; }
+.ptybar .ptyhint { color: #6e7681; font-size: 11px; margin-right: 4px; }
+.ptychip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 4px 2px 8px;
+           border: 1px solid #30363d; border-radius: 12px; background: #161b22; cursor: pointer; }
+.ptychip.active { border-color: #58a6ff; background: #1f6feb22; }
+.ptychip:hover { border-color: #8b949e; }
+.ptychip .x { color: #6e7681; padding: 0 4px; border-radius: 8px; }
+.ptychip .x:hover { color: #f85149; background: #30363d; }
+
 .toast { position: fixed; bottom: 16px; right: 16px; max-width: 520px; max-height: 45vh; overflow: auto;
          background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px;
          font-family: Consolas, monospace; font-size: 12px; white-space: pre-wrap; display: none; z-index: 200; }
