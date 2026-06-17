@@ -111,6 +111,13 @@ tr:hover td { background: #161b22; }
 .sesshd { font-size: 12px; font-weight: 600; color: #58a6ff; padding: 4px 2px; border-bottom: 1px solid #21262d; margin-bottom: 8px; }
 .termbar .quick .grp { color: #6e7681; font-size: 11px; margin: 0 2px 0 8px; }
 
+/* fork 家族 (会话分叉可视化) */
+.forkfam { border-left: 2px solid #8957e5; padding-left: 8px; margin: 6px 0 12px; }
+.forkfamhd { font-size: 11px; color: #b083f0; margin-bottom: 6px; }
+.forktag { font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-right: 6px;
+           background: #2d2347; color: #b083f0; }
+.forktag.root { background: #133929; color: #3fb950; }
+
 /* 后台 Agent 最近活动 */
 .agentact { margin-top: 6px; font-size: 11px; line-height: 1.55; border-left: 2px solid #30363d; padding-left: 8px; }
 .agentact .au { color: #79b8ff; }

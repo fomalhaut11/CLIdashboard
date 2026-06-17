@@ -30,8 +30,12 @@ function connect(path,cmd){
   document.getElementById("cwd").textContent="终端 @ "+path;
   const proto=location.protocol==="https:"?"wss":"ws";
   ws=new WebSocket(`${proto}://${location.host}/pty?cwd=${encodeURIComponent(path)}`);
-  ws.onopen=()=>{sendResize();term.focus();loadPtys();   // 后端会回放该终端最近输出
-    if(pendingCmd){const c=pendingCmd;pendingCmd=null;setTimeout(()=>{if(ws&&ws.readyState===1)ws.send(JSON.stringify({i:c+"\r"}));},700);}};
+  ws.onopen=()=>{
+    try{fit.fit()}catch(e){}             // 先按当前可见面板算准尺寸, 再发给后端
+    sendResize(); term.focus(); loadPtys();   // 后端会回放该终端最近输出
+    if(pendingCmd){const c=pendingCmd;pendingCmd=null;
+      setTimeout(()=>{ try{fit.fit()}catch(e){}; sendResize();   // 起 claude 前再确认一次尺寸, 避免 TUI 按错尺寸布局
+        if(ws&&ws.readyState===1)ws.send(JSON.stringify({i:c+"\r"}));},700);}};
   ws.onmessage=e=>term.write(e.data);
   ws.onclose=()=>term.write("\r\n\x1b[33m[已断开此视图, 终端进程仍在后台存活]\x1b[0m\r\n");
   document.querySelectorAll(".card").forEach(c=>c.classList.toggle("active",c.dataset.path===path));
@@ -232,7 +236,7 @@ function sessSection(title,list,kind){
 }
 async function openSessions(path,branch){
   sessPath=path;
-  document.getElementById("sesstitle").textContent="会话 @ "+branch+" — 点「恢复」在该 worktree 接回 (claude / codex)";
+  document.getElementById("sesstitle").textContent="会话 @ "+branch+" — 恢复=接回; 分叉=复制分叉前上下文开新分支 (claude)";
   document.getElementById("sessmodal").style.display="flex";
   document.getElementById("sesslist").innerHTML="加载中...";
   document.getElementById("sessdir").textContent="";
@@ -242,7 +246,50 @@ async function openSessions(path,branch){
   ]);
   document.getElementById("sessdir").textContent="claude: "+(cc.dir||"-")+"   |   codex: "+(cx.dir||"-");
   document.getElementById("sesslist").innerHTML=
-    sessSection("Claude 会话",cc.sessions,"claude")+sessSection("Codex 会话",cx.sessions,"codex");
+    renderClaudeSessions(cc.sessions)+sessSection("Codex 会话",cx.sessions,"codex");
+}
+
+// 单条会话行 (claude 多一个「分叉」按钮)
+function sessRow(s,kind,tag,indent){
+  return `<div class="procitem" style="${indent?'margin-left:16px':''}">
+    <div class="lbl">${tag||""}${esc(s.name||s.preview||"(无预览)")}</div>
+    <div class="sub">${s.mtime} · ${s.size_kb} KB · ${esc(s.id)}</div>
+    <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+      <button class="primary" onclick="resumeSession('${kind}','${s.id}')">恢复</button>
+      ${kind==="claude"?`<button onclick="forkSession('${s.id}')" title="从此会话分叉: 新 session 复制分叉前上下文, 之后独立推进, 原对话不动">分叉</button>`:""}
+      <button onclick="copyResume('${kind}','${s.id}')">复制命令</button>
+    </div></div>`;
+}
+
+// claude 会话: 按"首条消息 uuid"聚成 fork 家族 (同源会话共享分叉前前缀 -> 同一首条 uuid)
+function renderClaudeSessions(list){
+  if(!list||!list.length)
+    return `<div class="sesssec"><div class="sesshd">Claude 会话 (0)</div><div style="color:#6e7681;padding:6px">无</div></div>`;
+  const fam={};
+  list.forEach(s=>{ const k=s.first_uuid||("solo:"+s.id); (fam[k]=fam[k]||[]).push(s); });
+  const groups=Object.values(fam).sort((a,b)=>(b[0].ts||0)-(a[0].ts||0));
+  const nFam=groups.filter(g=>g.length>1).length;
+  let html=`<div class="sesssec"><div class="sesshd">Claude 会话 (${list.length})`+
+    (nFam?`<span style="color:#6e7681;font-weight:400"> · ${nFam} 个 fork 家族</span>`:"")+`</div>`;
+  groups.forEach(g=>{
+    if(g.length>1){
+      g.sort((a,b)=>(a.ts||0)-(b.ts||0));   // 家族内按时间升序, 最早=根
+      html+=`<div class="forkfam"><div class="forkfamhd">⑂ fork 家族 · ${g.length} 个分支 · 共享分叉前上下文</div>`;
+      g.forEach((s,i)=>html+=sessRow(s,"claude",
+        i===0?'<span class="forktag root">根</span>':'<span class="forktag">分支</span>', true));
+      html+=`</div>`;
+    } else {
+      html+=sessRow(g[0],"claude","",false);
+    }
+  });
+  return html+`</div>`;
+}
+function forkSession(id){
+  id=safeId(id); if(!id){ toast("会话 id 非法, 拒绝"); return; }
+  const path=sessPath; closeSess();
+  document.querySelector('.tab[data-tab="streams"]').click();
+  connect(path,"claude --resume "+id+" --fork-session");
+  toast("正在分叉 "+id.slice(0,8)+" — 新 session 共享分叉前上下文, 原对话不动\n并行 A/B: 在不同 worktree 各分叉一次");
 }
 function closeSess(){ document.getElementById("sessmodal").style.display="none"; }
 function safeId(id){ return /^[0-9a-fA-F-]{8,64}$/.test(id||"") ? id : ""; }

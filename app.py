@@ -9,6 +9,7 @@ Stream Dashboard v1.6 - 多 stream worktree 一体化管理控制台
 仅监听 127.0.0.1. 终端/进程是真实 shell, 切勿绑定 0.0.0.0.
 启动: python tools/stream_dashboard/app.py  ->  http://127.0.0.1:5111
 """
+import collections
 import json
 import os
 import re
@@ -467,6 +468,9 @@ def _session_meta(fp, info):
                     continue
                 if not info.get("cwd") and r.get("cwd"):
                     info["cwd"] = r["cwd"]
+                # 首条消息 uuid: fork 复制分叉前前缀, 故同源(原始+各 fork)会话共享同一首条 uuid
+                if not info.get("first_uuid") and r.get("uuid"):
+                    info["first_uuid"] = r["uuid"]
                 t = r.get("type")
                 if t == "summary" and not info["name"]:
                     info["name"] = (r.get("summary") or "")[:60]
@@ -564,7 +568,8 @@ def api_sessions():
                 continue
             info = {"id": sid, "ts": st.st_mtime,
                     "mtime": time.strftime("%m-%d %H:%M", time.localtime(st.st_mtime)),
-                    "size_kb": round(st.st_size / 1024), "name": "", "preview": "", "cwd": ""}
+                    "size_kb": round(st.st_size / 1024), "name": "", "preview": "",
+                    "cwd": "", "first_uuid": ""}
             _session_meta(fp, info)
             # git 解析该会话 cwd 确认归属; cwd 读不到则信任目录名编码(已落在候选集)
             if info.get("cwd") and git_toplevel(info["cwd"]) != target:
@@ -727,6 +732,56 @@ def api_codex_sessions():
 PTYS = {}                 # key(规范化 cwd) -> {"proc","buf","clients","cwd"}
 PTY_LOCK = threading.Lock()
 PTY_BUF_MAX = 200000      # 每个终端保留最近 ~200KB 输出, 供重连回放
+PTY_CLIENT_MAX_BYTES = 4000000   # 单客户端积压上限 ~4MB; 超了丢最旧帧 (防慢客户端拖垮 PTY)
+
+
+class _PtyClient:
+    """单个浏览器连接的发送侧: 自带队列 + 独立发送线程.
+
+    关键: 读线程只往队列里 feed (永不阻塞); 发送线程负责 ws.send.
+    这样某个浏览器收得慢/卡住, 也不会反压堵死 PTY 读线程 -> 不会卡死里面的 claude.
+    (旧实现是读线程直接 ws.send, 阻塞式; 高频整屏重绘时浏览器收不赢就把 claude 冻住.)
+    积压时把待发帧合并成一次 send 降压; 超上限丢最旧帧 (TUI 会整屏重绘自愈)."""
+
+    def __init__(self, ws):
+        self.ws = ws
+        self.q = collections.deque()
+        self.nbytes = 0
+        self.cv = threading.Condition()
+        self.alive = True
+        self.t = threading.Thread(target=self._run, daemon=True)
+        self.t.start()
+
+    def feed(self, data):
+        if not data:
+            return
+        with self.cv:
+            self.q.append(data)
+            self.nbytes += len(data)
+            while self.nbytes > PTY_CLIENT_MAX_BYTES and len(self.q) > 1:
+                self.nbytes -= len(self.q.popleft())
+            self.cv.notify()
+
+    def close(self):
+        with self.cv:
+            self.alive = False
+            self.cv.notify()
+
+    def _run(self):
+        while True:
+            with self.cv:
+                while self.alive and not self.q:
+                    self.cv.wait()
+                if not self.q and not self.alive:
+                    return
+                chunk = "".join(self.q)   # 合并待发帧 -> 一次 send
+                self.q.clear()
+                self.nbytes = 0
+            try:
+                self.ws.send(chunk)
+            except Exception:  # noqa: BLE001
+                self.alive = False
+                return
 
 
 def _pty_reader(key):
@@ -745,19 +800,14 @@ def _pty_reader(key):
             if not data:
                 continue
             ent["buf"] = (ent["buf"] + data)[-PTY_BUF_MAX:]
-            for ws in list(ent["clients"]):
-                try:
-                    ws.send(data)
-                except Exception:  # noqa: BLE001
-                    ent["clients"].discard(ws)
+            for c in list(ent["clients"]):
+                c.feed(data)            # 非阻塞: 入各客户端队列, 慢客户端不影响读取
     except (EOFError, Exception):  # noqa: BLE001
         pass
     finally:
-        for ws in list(ent["clients"]):
-            try:
-                ws.send("\r\n\x1b[31m[终端进程已退出]\x1b[0m\r\n")
-            except Exception:  # noqa: BLE001
-                pass
+        for c in list(ent["clients"]):
+            c.feed("\r\n\x1b[31m[终端进程已退出]\x1b[0m\r\n")
+            c.close()
         with PTY_LOCK:
             PTYS.pop(key, None)
 
@@ -773,7 +823,10 @@ def _get_or_spawn_pty(cwd):
             except Exception:  # noqa: BLE001
                 pass
             PTYS.pop(key, None)   # 死掉的清掉重开
-        proc = winpty.PtyProcess.spawn(C.SHELL, cwd=cwd, dimensions=(30, 100))
+        env = dict(os.environ)
+        env.setdefault("TERM", "xterm-256color")
+        env.setdefault("COLORTERM", "truecolor")
+        proc = winpty.PtyProcess.spawn(C.SHELL, cwd=cwd, env=env, dimensions=(40, 140))
         ent = {"proc": proc, "buf": "", "clients": set(), "cwd": cwd}
         PTYS[key] = ent
     threading.Thread(target=_pty_reader, args=(key,), daemon=True).start()
@@ -817,12 +870,12 @@ def pty(ws):
     if not os.path.isdir(cwd):
         cwd = C.REPO_ROOT
     key, ent = _get_or_spawn_pty(cwd)
-    ent["clients"].add(ws)
-    if ent["buf"]:                       # 重连回放: 让客户端看到该终端当前状态
-        try:
-            ws.send(ent["buf"])
-        except Exception:  # noqa: BLE001
-            pass
+    client = _PtyClient(ws)
+    ent["clients"].add(client)
+    # 注意: 不回放原始字节历史 (ent["buf"]). 全屏 TUI(claude/codex) 的历史字节
+    # 带的是"按旧尺寸"的绝对光标定位, 重放到新尺寸终端会画出错位的"残留对话".
+    # 改为靠下面首个 resize 抖动一次, 强制 TUI 自己按新尺寸重绘当前屏 (干净 + 尺寸正确).
+    first_resize = [True]
     try:
         while True:
             msg = ws.receive()
@@ -839,13 +892,23 @@ def pty(ws):
                     break
             elif "r" in obj:
                 try:
-                    ent["proc"].setwinsize(int(obj["r"][1]), int(obj["r"][0]))
+                    cols, rows = int(obj["r"][0]), int(obj["r"][1])
+                    if rows > 0 and cols > 0:
+                        if first_resize[0]:
+                            first_resize[0] = False
+                            # 抖动一次 (先 -1 行再回正) -> 两次 SIGWINCH, 逼 Ink/TUI 重绘,
+                            # 清掉本视图 detach 期间残留、并按真实尺寸排版
+                            ent["proc"].setwinsize(max(1, rows - 1), cols)
+                            time.sleep(0.03)
+                        ent["proc"].setwinsize(rows, cols)
+                        ent["size"] = (rows, cols)
                 except Exception:  # noqa: BLE001
                     pass
     except Exception:  # noqa: BLE001
         pass
     finally:
-        ent["clients"].discard(ws)       # 仅 detach, 不杀 PTY
+        client.close()
+        ent["clients"].discard(client)   # 仅 detach, 不杀 PTY
 
 
 if __name__ == "__main__":
